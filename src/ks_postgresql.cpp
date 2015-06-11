@@ -1,11 +1,11 @@
 #include "endpoint.h"
 
 #include <stdexcept>
-#include <set>
 #include <libpq-fe.h>
 
 #include "schema.h"
 #include "database_client_traits.h"
+#include "choose_primary_key.h"
 #include "row_printer.h"
 
 class PostgreSQLRes {
@@ -624,20 +624,11 @@ struct PostgreSQLTableLister {
 			       "table_class.oid = pg_attribute.attrelid AND pg_attribute.attnum = indkey[position] AND "
 			       "table_class.relname = '" + table.name + "' AND "
 			       "NOT pg_index.indisprimary "
-			 "ORDER BY relname, position",
+			 "ORDER BY index_class.oid, position",
 			key_lister);
 
-		// if the table has no primary key, we need to find a unique key with no nullable columns to act as a surrogate primary key
-		sort(table.keys.begin(), table.keys.end()); // order is arbitrary for keys, but both ends must be consistent, so we sort the keys by name
-		
-		for (Keys::const_iterator key = table.keys.begin(); key != table.keys.end() && table.primary_key_columns.empty(); ++key) {
-			if (key->unique && !key_lister.unique_but_nullable_keys.count(key->name)) {
-				table.primary_key_columns = key->columns;
-			}
-		}
 		if (table.primary_key_columns.empty()) {
-			// of course this falls apart if there are no unique keys, so we don't allow that
-			throw runtime_error("Couldn't find a primary or non-nullable unique key on table " + table.name);
+			choose_primary_key_columns(table, key_lister.unique_but_nullable_keys);
 		}
 
 		database.tables.push_back(table);
