@@ -1,5 +1,6 @@
 #include <boost/algorithm/string.hpp>
 #include <thread>
+#include <memory>
 
 #include "command.h"
 #include "commit_level.h"
@@ -29,7 +30,7 @@ struct SyncToWorker {
 			output_stream(write_to_descriptor),
 			input(input_stream),
 			output(output_stream),
-			client(database_host, database_port, database_name, database_username, database_password, set_variables),
+			read_client(database_host, database_port, database_name, database_username, database_password, set_variables),
 			table_filters(load_filters(filter_file)),
 			ignore_tables(ignore_tables),
 			only_tables(only_tables),
@@ -42,6 +43,15 @@ struct SyncToWorker {
 			structure_only(structure_only),
 			protocol_version(0),
 			worker_thread(std::ref(*this)) {
+		// in addition to \client, which we will use for our own reads, we need to populate a pool of
+		// database connections which we will write table changes to.  these are separate to the reader
+		// connections only because we need to ensure that all writes for a particular table go to the
+		// same connection, to avoid blocking.  since N workers can be writing to at most N tables at
+		// once, it follows that we need to add exactly one more connection per worker to the pool.
+		unique_ptr<DatabaseClient> write_client(std::make_unique<DatabaseClient>(database_host, database_port, database_name, database_username, database_password, set_variables));
+		write_client->start_write_transaction();
+		write_client->disable_referential_integrity();
+		sync_queue.push_database_writer(move(write_client));
 	}
 
 	~SyncToWorker() {
@@ -62,20 +72,11 @@ struct SyncToWorker {
 			} else {
 				enqueue_tables();
 
-				client.start_write_transaction();
-				client.disable_referential_integrity();
-
 				SyncToProtocol<SyncToWorker<DatabaseClient>, DatabaseClient> sync_to_protocol(*this);
 				sync_to_protocol.sync_tables();
 
 				wait_for_finish();
-
-				client.enable_referential_integrity();
-				if (commit_level >= CommitLevel::success) {
-					commit();
-				} else {
-					rollback();
-				}
+				finish_writer();
 			}
 		} catch (const exception &e) {
 			// make sure all other workers terminate promptly, and if we are the first to fail, output the error
@@ -85,7 +86,7 @@ struct SyncToWorker {
 
 			// optionally, try to commit the changes we've made, but ignore any errors, and don't bother outputting timings
 			if (commit_level == CommitLevel::always || commit_level == CommitLevel::often) {
-				try { client.commit_transaction(); } catch (...) {}
+				try { finish_writer(); } catch (...) {}
 			}
 		}
 
@@ -151,7 +152,7 @@ struct SyncToWorker {
 		if (leader) {
 			send_command(output, Commands::SCHEMA);
 			read_expected_command(input, Commands::SCHEMA, database);
-			client.convert_unsupported_database_schema(database);
+			read_client.convert_unsupported_database_schema(database);
 			restrict_tables(database.tables);
 			check_tables_usable();
 		}
@@ -161,11 +162,11 @@ struct SyncToWorker {
 		if (leader) {
 			// get our schema
 			Database to_database;
-			client.populate_database_schema(to_database);
+			read_client.populate_database_schema(to_database);
 			restrict_tables(to_database.tables);
 
 			// check they match, and if not, figure out what DDL we would need to run to fix the 'to' end's schema
-			SchemaMatcher<DatabaseClient> matcher(client);
+			SchemaMatcher<DatabaseClient> matcher(read_client);
 
 			matcher.match_schemas(database, to_database);
 
@@ -175,7 +176,7 @@ struct SyncToWorker {
 				for (const string &statement : matcher.statements) {
 					if (verbose) cout << statement << endl;
 					if (statement.substr(0, 2) != "--") { // stop postgresql printing the comments to stderr
-						client.execute(statement);
+						read_client.execute(statement); // TODO: making a lie of the name read_client here
 					}
 				}
 			} else {
@@ -263,27 +264,22 @@ struct SyncToWorker {
 		sync_queue.wait_at_barrier();
 	}
 
-	void commit() {
+	void finish_writer() {
 		time_t started = time(nullptr);
+		unique_ptr<DatabaseClient> write_client(sync_queue.pop_database_writer());
 
-		client.commit_transaction();
+		write_client.enable_referential_integrity();
+
+		if (commit_level == CommitLevel::never) {
+			write_client.rollback_transaction();
+		} else {
+			write_client.commit_transaction();
+		}
 
 		if (verbose && commit_level < CommitLevel::tables) {
 			time_t now = time(nullptr);
 			unique_lock<mutex> lock(sync_queue.mutex);
-			cout << "committed in " << (now - started) << "s" << endl << flush;
-		}
-	}
-
-	void rollback() {
-		time_t started = time(nullptr);
-
-		client.rollback_transaction();
-
-		if (verbose) {
-			time_t now = time(nullptr);
-			unique_lock<mutex> lock(sync_queue.mutex);
-			cout << "rolled back in " << (now - started) << "s" << endl << flush;
+			cout << (commit_level == CommitLevel::never ? "rolled back in " : "committed in ") << (now - started) << "s" << endl << flush;
 		}
 	}
 
@@ -302,7 +298,7 @@ struct SyncToWorker {
 	FDReadStream input_stream;
 	Unpacker<FDReadStream> input;
 	Packer<FDWriteStream> output;
-	DatabaseClient client;
+	DatabaseClient read_client;
 	
 	TableFilters table_filters;
 	const set<string> ignore_tables;
