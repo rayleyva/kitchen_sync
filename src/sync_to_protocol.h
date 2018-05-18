@@ -72,8 +72,7 @@ struct SyncToProtocol {
 	}
 
 	void sync_table(const Table &table) {
-		RowReplacer<DatabaseClient> row_replacer(client, table, worker.commit_level >= CommitLevel::often,
-			[&] { if (worker.progress) { cout << "." << flush; } });
+		RowReplacer<DatabaseClient> row_replacer(client, table, worker.commit_level >= CommitLevel::often);
 
 		size_t hash_commands = 0;
 		size_t rows_commands = 0;
@@ -142,7 +141,7 @@ struct SyncToProtocol {
 		}
 
 		// make sure all pending updates have been applied
-		row_replacer.apply();
+		row_replacer.apply([&] { if (worker.progress) { cout << "." << flush; } });
 
 		// reset sequences on those databases that don't automatically bump the high-water mark for inserts
 		ResetTableSequences<DatabaseClient>::execute(client, table);
@@ -225,7 +224,7 @@ struct SyncToProtocol {
 		read_array(input, table_name, prev_key, last_key); // the first array gives the range arguments, which is followed by one array for each row
 		if (worker.verbose > 1) cout << timestamp() << " -> rows " << table.name << ' ' << values_list(client, table, prev_key) << ' ' << values_list(client, table, last_key) << endl;
 
-		RowRangeApplier<DatabaseClient>(row_replacer, table, prev_key, last_key).stream_from_input(input);
+		RowRangeApplier<DatabaseClient>(row_replacer, table, prev_key, last_key, [&] { if (worker.progress) { cout << "." << flush; } }).stream_from_input(input);
 	}
 
 	HashResult find_hash_result_for(TableJob &table_job, const ColumnValues &prev_key, const ColumnValues &last_key) {

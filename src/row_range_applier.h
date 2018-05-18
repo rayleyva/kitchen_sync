@@ -12,14 +12,15 @@ struct RowRangeApplier {
 
 	typedef map<PackedRow, PackedRow> RowsByPrimaryKey;
 
-	RowRangeApplier(RowReplacer<DatabaseClient> &replacer, const Table &table, const ColumnValues &prev_key, const ColumnValues &last_key):
+	RowRangeApplier(RowReplacer<DatabaseClient> &replacer, const Table &table, const ColumnValues &prev_key, const ColumnValues &last_key, ProgressCallback progress_callback):
 		replacer(replacer),
 		client(replacer.client),
 		table(table),
 		prev_key(prev_key),
 		curr_key(prev_key),
 		last_key(last_key),
-		approx_buffered_bytes(0) {
+		approx_buffered_bytes(0),
+		progress_callback(progress_callback) {
 	}
 
 	template <typename InputStream>
@@ -132,7 +133,7 @@ struct RowRangeApplier {
 		// client row buffering for efficiency.
 		if (replacer.insert_sql.curr.size() > MAX_SENSIBLE_INSERT_STATEMENT_SIZE ||
 			replacer.primary_key_clearer.delete_sql.curr.size() > MAX_SENSIBLE_DELETE_STATEMENT_SIZE) {
-			replacer.apply();
+			replacer.apply(progress_callback);
 		}
 	}
 
@@ -144,6 +145,7 @@ struct RowRangeApplier {
 	ColumnValues last_key;
 	RowsByPrimaryKey source_rows;
 	size_t approx_buffered_bytes;
+	ProgressCallback progress_callback;
 };
 
 #endif
