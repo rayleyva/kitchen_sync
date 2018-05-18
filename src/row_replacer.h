@@ -23,12 +23,11 @@ typedef std::function<void ()> ProgressCallback;
 // databases that don't support the REPLACE statement must explicitly clear conflicting rows
 template <typename DatabaseClient, bool = is_base_of<SupportsReplace, DatabaseClient>::value>
 struct RowReplacer {
-	RowReplacer(DatabaseClient &client, const Table &table, bool commit_often):
+	RowReplacer(DatabaseClient &client, const Table &table):
 		client(client),
 		columns(table.columns),
 		insert_sql("INSERT INTO " + table.name + " VALUES\n(", ")"),
 		primary_key_clearer(client, table, table.primary_key_columns),
-		commit_often(commit_often),
 		rows_changed(0) {
 		// set up the clearers we'll need to insert rows - these clear any conflicting values from later in the same table
 		for (const Key &key : table.keys) {
@@ -70,7 +69,7 @@ struct RowReplacer {
 		rows_changed++;
 	}
 
-	inline void apply(ProgressCallback progress_callback) {
+	inline void apply(bool commit, ProgressCallback progress_callback) {
 		primary_key_clearer.apply();
 
 		for (UniqueKeyClearer<DatabaseClient> &unique_key_clearer : unique_keys_clearers) {
@@ -79,7 +78,7 @@ struct RowReplacer {
 
 		insert_sql.apply(client);
 
-		if (commit_often) {
+		if (commit) {
 			client.commit_transaction();
 			client.start_write_transaction();
 		}
@@ -101,12 +100,11 @@ struct RowReplacer {
 // databases that do support REPLACE are much simpler - we just use the same statement for any type of insert/update
 template <typename DatabaseClient>
 struct RowReplacer<DatabaseClient, true> {
-	RowReplacer(DatabaseClient &client, const Table &table, bool commit_often):
+	RowReplacer(DatabaseClient &client, const Table &table):
 		client(client),
 		columns(table.columns),
 		insert_sql("REPLACE INTO " + table.name + " VALUES\n(", ")"),
 		primary_key_clearer(client, table, table.primary_key_columns),
-		commit_often(commit_often),
 		rows_changed(0) {
 	}
 
@@ -130,12 +128,12 @@ struct RowReplacer<DatabaseClient, true> {
 		rows_changed++;
 	}
 
-	inline void apply(ProgressCallback progress_callback) {
+	inline void apply(bool commit, ProgressCallback progress_callback) {
 		primary_key_clearer.apply();
 
 		insert_sql.apply(client);
 
-		if (commit_often) {
+		if (commit) {
 			client.commit_transaction();
 			client.start_write_transaction();
 		}
@@ -149,7 +147,6 @@ struct RowReplacer<DatabaseClient, true> {
 	const Columns &columns;
 	BaseSQL insert_sql;
 	UniqueKeyClearer<DatabaseClient> primary_key_clearer;
-	bool commit_often;
 	size_t rows_changed;
 };
 

@@ -12,9 +12,10 @@ struct RowRangeApplier {
 
 	typedef map<PackedRow, PackedRow> RowsByPrimaryKey;
 
-	RowRangeApplier(RowReplacer<DatabaseClient> &replacer, const Table &table, const ColumnValues &prev_key, const ColumnValues &last_key, ProgressCallback progress_callback):
+	RowRangeApplier(RowReplacer<DatabaseClient> &replacer, bool commit_often, const Table &table, const ColumnValues &prev_key, const ColumnValues &last_key, ProgressCallback progress_callback):
 		replacer(replacer),
 		client(replacer.client),
+		commit_often(commit_often),
 		table(table),
 		prev_key(prev_key),
 		curr_key(prev_key),
@@ -133,12 +134,13 @@ struct RowRangeApplier {
 		// client row buffering for efficiency.
 		if (replacer.insert_sql.curr.size() > MAX_SENSIBLE_INSERT_STATEMENT_SIZE ||
 			replacer.primary_key_clearer.delete_sql.curr.size() > MAX_SENSIBLE_DELETE_STATEMENT_SIZE) {
-			replacer.apply(progress_callback);
+			replacer.apply(commit_often, progress_callback);
 		}
 	}
 
 	RowReplacer<DatabaseClient> &replacer;
 	DatabaseClient &client;
+	bool commit_often;
 	const Table &table;
 	ColumnValues prev_key;
 	ColumnValues curr_key;
