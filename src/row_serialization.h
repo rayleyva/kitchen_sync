@@ -15,6 +15,7 @@
 #include "xxHash/xxhash.h"
 
 #include "hash_algorithm.h"
+#include "message_pack/pack.h"
 
 struct RowCounter {
 	RowCounter(): row_count(0) {}
